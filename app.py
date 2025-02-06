@@ -15,58 +15,72 @@ from linebot.models import (
 
 app = Flask(__name__)
 
-# 環境変数からトークン・シークレットを取得（Render や Heroku で設定）
-LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "YOUR_CHANNEL_ACCESS_TOKEN")
+# ==== 環境変数から読み込む（Render/Herokuなどで設定）====
+LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "YOUR_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "YOUR_CHANNEL_SECRET")
 
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# PDFを読み込んでテキストを一度だけ抽出しておく（大きいPDFの場合は別途工夫が必要）
+# ==== PDFテキストをまとめて読み込んでおく ====
 PDF_TEXT = ""
+PDF_FILE_PATH = "manual.pdf"  # 例: 同じフォルダに manual.pdf がある前提
+
 try:
-    with pdfplumber.open("manual.pdf") as pdf:
+    with pdfplumber.open(PDF_FILE_PATH) as pdf:
         for page in pdf.pages:
             page_text = page.extract_text()
             if page_text:
                 PDF_TEXT += page_text
 except Exception as e:
-    print("PDFの読み込みに失敗しました:", e)
+    print(f"PDF読み込みエラー: {e}")
+    # 失敗した場合、PDF_TEXT は空のままにしておく or ログなどに書いておく
 
 
 @app.route("/")
-def hello():
-    return "Hello, this is a LINE Bot server."
+def health_check():
+    # デプロイ先のヘルスチェックやブラウザ確認用に "OK" を返す
+    return "Hello! This is LINE Bot server."
+
 
 @app.route("/callback", methods=["POST"])
 def callback():
-    # LINE からの署名検証
-    signature = request.headers["X-Line-Signature"]
+    # 1. LINE 署名の取得
+    signature = request.headers.get("X-Line-Signature")
+    if signature is None:
+        # 署名がついていない → 不正リクエストとして 400 を返す
+        abort(400, "Missing X-Line-Signature header.")
 
-    # リクエストボディを取得
+    # 2. リクエストボディの取得
     body = request.get_data(as_text=True)
     app.logger.info("Request body: " + body)
 
-    # 署名を検証して、問題なければhandlerに処理を任せる
+    # 3. 署名検証
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
-        abort(400)
+        # 署名が一致しない場合は 400
+        abort(400, "Invalid signature. Please check your channel secret.")
 
-    return "OK"
+    # 4. 正常処理できた場合は 200 OK を返す
+    return "OK", 200
 
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
-    user_text = event.message.text  # ユーザーが送ってきたメッセージ
+    """
+    ユーザーがテキストメッセージを送ったときに呼び出される関数。
+    - PDF_TEXT内にユーザーのメッセージが含まれていれば、 https://kig.jp/ を返す。
+    - 含まれていなければ「ありません」を返す。
+    """
+    user_text = event.message.text  # ユーザーからのメッセージ
 
-    # PDFのテキストにユーザーのメッセージが含まれているかを単純に検索
     if user_text in PDF_TEXT:
         reply_text = "https://kig.jp/"
     else:
         reply_text = "ありません"
 
-    # LINEに返答する
+    # LINEにメッセージを返信
     line_bot_api.reply_message(
         event.reply_token,
         TextSendMessage(text=reply_text)
@@ -74,6 +88,5 @@ def handle_message(event):
 
 
 if __name__ == "__main__":
-    # ローカル実行用
-    app.run(host="0.0.0.0", port=8000, debug=True)
-
+    # ローカル実行のテスト用
+    app.run(port=8000, debug=True)
